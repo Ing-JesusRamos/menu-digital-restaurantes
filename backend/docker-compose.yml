@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: menu-platform-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: menu_app
+      POSTGRES_PASSWORD: menu_app_dev
+      POSTGRES_DB: menu_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - menu-platform-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U menu_app -d menu_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  menu-platform-postgres-data:
