@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getDatabase } from "@/lib/db/client";
@@ -226,21 +226,66 @@ export async function POST(request: Request) {
   const totalCents = snapshot.reduce((total, item) => total + item.subtotalCents, 0);
 
   try {
-    const [order] = await db
-      .insert(orders)
-      .values({
-        restaurantId: session.clientSession.restaurantId,
-        tableSessionId: session.tableSession.id,
-        clientSessionId: session.clientSession.id,
-        idempotencyKey,
-        requestHash,
-        status: "submitted",
-        items: snapshot,
-        totalCents,
-      })
-      .returning();
+    const result = await db.transaction(async (tx) => {
+      // Serialize order creation with table closure for this table session.
+      await tx.execute(sql`SELECT id FROM table_sessions WHERE id = ${session.tableSession.id} FOR UPDATE`);
 
-    return NextResponse.json({ order, replayed: false }, { status: 201 });
+      const [lockedSession] = await tx
+        .select()
+        .from(tableSessions)
+        .where(eq(tableSessions.id, session.tableSession.id))
+        .limit(1);
+
+      if (!lockedSession || lockedSession.status !== "open") {
+        return { kind: "closed" as const };
+      }
+
+      const [existingInTransaction] = await tx
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.clientSessionId, session.clientSession.id),
+            eq(orders.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .limit(1);
+
+      if (existingInTransaction) {
+        if (existingInTransaction.requestHash !== requestHash) {
+          return { kind: "conflict" as const };
+        }
+        return { kind: "replayed" as const, order: existingInTransaction };
+      }
+
+      const [order] = await tx
+        .insert(orders)
+        .values({
+          restaurantId: session.clientSession.restaurantId,
+          tableSessionId: session.tableSession.id,
+          clientSessionId: session.clientSession.id,
+          idempotencyKey,
+          requestHash,
+          status: "submitted",
+          items: snapshot,
+          totalCents,
+        })
+        .returning();
+
+      return { kind: "created" as const, order };
+    });
+
+    if (result.kind === "closed") {
+      return NextResponse.json({ error: "Table session is closed" }, { status: 409 });
+    }
+    if (result.kind === "conflict") {
+      return NextResponse.json({ error: "Idempotency key was reused with a different request" }, { status: 409 });
+    }
+    if (result.kind === "replayed") {
+      return NextResponse.json({ order: result.order, replayed: true });
+    }
+
+    return NextResponse.json({ order: result.order, replayed: false }, { status: 201 });
   } catch (error) {
     const [raceWinner] = await db
       .select()
