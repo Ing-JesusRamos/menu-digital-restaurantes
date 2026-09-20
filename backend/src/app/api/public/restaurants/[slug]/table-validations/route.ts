@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getDatabase } from "@/lib/db/client";
 import { clientSessions, restaurantTables, restaurants, tableSessions } from "@/lib/db/schema";
 import { createOpaqueToken, hashToken, verifyTableCode } from "@/lib/security/tokens";
+import { consumeRateLimit } from "@/lib/security/rate-limit";
 
 const bodySchema = z.object({
   code: z.string().trim().min(1).max(32),
@@ -15,6 +16,18 @@ type RouteContext = {
 
 export async function POST(request: Request, context: RouteContext) {
   const { slug } = await context.params;
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    ?? request.headers.get("x-real-ip")
+    ?? "unknown";
+  const rate = consumeRateLimit(`table-validation:${slug}:${ip}`, { limit: 10, windowMs: 5 * 60 * 1000 });
+
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { error: "Too many table validation attempts", retryAfterSeconds: rate.retryAfterSeconds },
+      { status: 429, headers: { "retry-after": String(rate.retryAfterSeconds) } },
+    );
+  }
+
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
 
   if (!parsed.success) {
@@ -70,12 +83,15 @@ export async function POST(request: Request, context: RouteContext) {
     return { tableSession, clientSessionId: clientSession.id, clientToken };
   });
 
-  return NextResponse.json({
-    tableSessionId: result.tableSession.id,
-    clientSessionId: result.clientSessionId,
-    clientSessionToken: result.clientToken,
-    table: { id: table.id, label: table.label },
-    status: result.tableSession.status,
-  });
+  return NextResponse.json(
+    {
+      tableSessionId: result.tableSession.id,
+      clientSessionId: result.clientSessionId,
+      clientSessionToken: result.clientToken,
+      table: { id: table.id, label: table.label },
+      status: result.tableSession.status,
+    },
+    { headers: { "x-ratelimit-remaining": String(rate.remaining) } },
+  );
 }
 

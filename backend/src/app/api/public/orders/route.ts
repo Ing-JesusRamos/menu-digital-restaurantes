@@ -17,7 +17,7 @@ import { hashRequest, hashToken } from "@/lib/security/tokens";
 const itemSchema = z.object({
   dishId: z.string().uuid(),
   quantity: z.number().int().min(1).max(99),
-  removedIngredientIds: z.array(z.string().uuid()).default([]),
+  removedIngredientIds: z.array(z.string().uuid()).max(50).default([]),
   extras: z
     .array(
       z.object({
@@ -25,12 +25,13 @@ const itemSchema = z.object({
         quantity: z.number().int().min(0).max(99),
       }),
     )
+    .max(20)
     .default([]),
 });
 
 const bodySchema = z.object({
   tableSessionId: z.string().uuid(),
-  items: z.array(itemSchema).min(1),
+  items: z.array(itemSchema).min(1).max(50),
 });
 
 type SnapshotItem = {
@@ -46,12 +47,21 @@ type SnapshotItem = {
 export async function POST(request: Request) {
   const clientToken = request.headers.get("x-client-session-token");
   const idempotencyKey = request.headers.get("idempotency-key");
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+
+  if (contentLength > 1_048_576) {
+    return NextResponse.json({ error: "Order payload is too large" }, { status: 413 });
+  }
 
   if (!clientToken || !idempotencyKey) {
     return NextResponse.json(
       { error: "x-client-session-token and idempotency-key are required" },
       { status: 400 },
     );
+  }
+
+  if (idempotencyKey.length > 128) {
+    return NextResponse.json({ error: "Idempotency-Key is too long" }, { status: 400 });
   }
 
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
