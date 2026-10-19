@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { requireRestaurantContext } from "@/lib/auth/restaurant-context";
 import { getDatabase } from "@/lib/db/client";
 import { clientSessions, orders, tableSessions } from "@/lib/db/schema";
+import { recordAuditEvent } from "@/lib/audit/events";
 
 type RouteContext = {
   params: Promise<{ slug: string; sessionId: string }>;
@@ -10,7 +11,7 @@ type RouteContext = {
 
 export async function POST(request: Request, context: RouteContext) {
   const { slug, sessionId } = await context.params;
-  const auth = await requireRestaurantContext(request, slug);
+  const auth = await requireRestaurantContext(request, slug, "table_sessions.close");
   if ("response" in auth) return auth.response;
 
   const db = getDatabase();
@@ -45,6 +46,15 @@ export async function POST(request: Request, context: RouteContext) {
   if (result.kind === "already-closed") {
     return NextResponse.json({ session: result.session, alreadyClosed: true });
   }
+
+  await recordAuditEvent(db, {
+    actorUserId: auth.actor.userId,
+    action: "table_session.closed",
+    entityType: "table_session",
+    entityId: sessionId,
+    restaurantId: auth.restaurant.id,
+    after: { status: "closed", closedAt: result.session?.closedAt },
+  });
 
   const tableOrders = await db
     .select({ totalCents: orders.totalCents })

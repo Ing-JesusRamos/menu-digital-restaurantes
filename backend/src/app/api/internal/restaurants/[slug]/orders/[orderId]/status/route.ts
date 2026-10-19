@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireRestaurantContext } from "@/lib/auth/restaurant-context";
 import { getDatabase } from "@/lib/db/client";
 import { orders } from "@/lib/db/schema";
+import { recordAuditEvent } from "@/lib/audit/events";
 
 const statusSchema = z.object({
   status: z.enum(["submitted", "preparing", "ready", "delivered"]),
@@ -22,7 +23,7 @@ type RouteContext = {
 
 export async function PATCH(request: Request, context: RouteContext) {
   const { slug, orderId } = await context.params;
-  const auth = await requireRestaurantContext(request, slug);
+  const auth = await requireRestaurantContext(request, slug, "orders.status.update");
   if ("response" in auth) return auth.response;
 
   const parsed = statusSchema.safeParse(await request.json().catch(() => null));
@@ -53,6 +54,18 @@ export async function PATCH(request: Request, context: RouteContext) {
     .set({ status: parsed.data.status, updatedAt: new Date() })
     .where(and(eq(orders.id, current.id), eq(orders.status, current.status)))
     .returning();
+
+  if (updated) {
+    await recordAuditEvent(db, {
+      actorUserId: auth.actor.userId,
+      action: "order.status_changed",
+      entityType: "order",
+      entityId: updated.id,
+      restaurantId: auth.restaurant.id,
+      before: { status: current.status },
+      after: { status: updated.status },
+    });
+  }
 
   return NextResponse.json({ order: updated ?? current });
 }

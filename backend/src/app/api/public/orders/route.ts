@@ -10,6 +10,7 @@ import {
   extras,
   ingredients,
   orders,
+  orderVersions,
   tableSessions,
 } from "@/lib/db/schema";
 import { hashRequest, hashToken } from "@/lib/security/tokens";
@@ -267,10 +268,21 @@ export async function POST(request: Request) {
           idempotencyKey,
           requestHash,
           status: "submitted",
+          source: "client",
+          currentVersion: 1,
           items: snapshot,
           totalCents,
         })
         .returning();
+
+      await tx.insert(orderVersions).values({
+        orderId: order.id,
+        version: 1,
+        items: snapshot,
+        totalCents,
+        confirmationMethod: "client_submission",
+        confirmedAt: new Date(),
+      });
 
       return { kind: "created" as const, order };
     });

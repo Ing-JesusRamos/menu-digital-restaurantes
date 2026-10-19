@@ -11,13 +11,17 @@ import {
   extras,
   ingredients,
   restaurants,
+  restaurantMemberships,
   restaurantTables,
+  userProfiles,
 } from "../src/lib/db/schema";
 
 config({ path: ".env.local" });
 
 const client = postgres(process.env.DATABASE_URL!);
 const db = drizzle(client);
+
+const developmentAdminId = "00000000-0000-4000-8000-000000000001";
 
 async function seed() {
   let [restaurant] = await db
@@ -32,6 +36,33 @@ async function seed() {
       .values({ name: "Restaurante Demo", slug: "demo-restaurante" })
       .returning();
   }
+
+  let [developmentAdmin] = await db
+    .select()
+    .from(userProfiles)
+    .where(eq(userProfiles.id, developmentAdminId))
+    .limit(1);
+
+  if (!developmentAdmin) {
+    [developmentAdmin] = await db
+      .insert(userProfiles)
+      .values({
+        id: developmentAdminId,
+        displayName: "Administrador Demo",
+        status: "active",
+      })
+      .returning();
+  }
+
+  await db
+    .insert(restaurantMemberships)
+    .values({
+      userId: developmentAdmin.id,
+      restaurantId: restaurant.id,
+      role: "restaurant_admin",
+      status: "active",
+    })
+    .onConflictDoNothing();
 
   let [category] = await db
     .select()
